@@ -69,6 +69,20 @@ FRAMEWORKS_BY_LANGUAGE = {
     }
 }
 
+# Allowed flavor values
+ALLOWED_FLAVORS = {
+    'container/fargate-api',
+    'composite-application',
+    'docker',
+    'serverless-function/api',
+    'devnav/docker',
+    'serverless-function/composite',
+    'container/fargate-consumer',
+    'devnav/gear-deploy',
+    'container/kubernetes',
+    'serverless-function/orchestration'
+}
+
 # Rate limit tracking
 rate_limit_remaining = 5000
 rate_limit_reset_time = None
@@ -349,7 +363,7 @@ def extract_asv(content):
     return None
 
 def extract_language_and_flavor(content):
-    """Extract language and flavor from Bogiefile"""
+    """Extract language and flavor from Bogiefile with flavor validation"""
     language = None
     flavor = None
     
@@ -357,42 +371,51 @@ def extract_language_and_flavor(content):
         yaml = YAML(typ='safe')
         data = yaml.load(content)
         if data:
-            # Get from pipeline.build.tool
+            # Get language from framework or tool
             if 'pipeline' in data and 'tasks' in data['pipeline']:
                 build_task = data['pipeline']['tasks'].get('build', {})
                 if isinstance(build_task, dict):
-                    # First try to get framework
+                    # First try framework
                     framework = build_task.get('framework')
                     if framework:
                         language = LANGUAGE_MAPPING.get(framework.lower(), framework)
                     else:
-                        # Fall back to tool if framework not specified
+                        # Fall back to tool
                         tool = build_task.get('tool')
                         if tool:
                             language = LANGUAGE_MAPPING.get(tool.lower(), tool)
             
-            # Get flavor
-            if 'pipeline' in data and 'flavor' in data['pipeline']:
-                flavor = data['pipeline']['flavor']
+            # Get and validate flavor
+            if 'pipeline' in data:
+                pipeline = data['pipeline']
+                if isinstance(pipeline, dict):
+                    # Get flavor from YAML
+                    flavor_candidate = pipeline.get('flavor')
+                    if flavor_candidate and flavor_candidate in ALLOWED_FLAVORS:
+                        flavor = flavor_candidate
+                    elif flavor_candidate:
+                        print(f"Warning: Invalid flavor '{flavor_candidate}' found, must be one of: {ALLOWED_FLAVORS}")
                 
-        # Fallback to regex
+        # Fallback to regex if YAML parsing fails or values not found
         if not language:
-            # First try framework regex
             framework_match = re.search(r"framework:\s*([^\s]+)", content, re.IGNORECASE)
             if framework_match:
                 framework = framework_match.group(1).strip()
                 language = LANGUAGE_MAPPING.get(framework.lower(), framework)
             else:
-                # Fall back to tool regex
                 tool_match = re.search(r"tool:\s*([^\s]+)", content, re.IGNORECASE)
                 if tool_match:
                     tool = tool_match.group(1).strip()
                     language = LANGUAGE_MAPPING.get(tool.lower(), tool)
                 
         if not flavor:
-            match = re.search(r"flavor:\s*([^\s]+)", content, re.IGNORECASE)
-            if match:
-                flavor = match.group(1).strip()
+            flavor_match = re.search(r"flavor:\s*([^\s]+)", content, re.IGNORECASE)
+            if flavor_match:
+                flavor_candidate = flavor_match.group(1).strip()
+                if flavor_candidate in ALLOWED_FLAVORS:
+                    flavor = flavor_candidate
+                else:
+                    print(f"Warning: Invalid flavor '{flavor_candidate}' found via regex")
                 
     except Exception as e:
         print(f"Error extracting language/flavor: {e}")
