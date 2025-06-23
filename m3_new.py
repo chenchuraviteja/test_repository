@@ -341,6 +341,11 @@ def extract_asv(content):
     """Extract ASV from content using YAML or regex"""
     try:
         yaml = YAML(typ='safe')
+        yaml.allow_duplicate_keys = True
+        yaml.Constructor.add_constructor(
+            'tag:yaml.org,2002:merge',
+            lambda loader, node: None
+        )
         data = yaml.load(content)
         if data:
             # Check in various locations
@@ -370,6 +375,11 @@ def extract_language_and_flavor(content):
     
     try:
         yaml = YAML(typ='safe')
+        yaml.allow_duplicate_keys = True
+        yaml.Constructor.add_constructor(
+            'tag:yaml.org,2002:merge',
+            lambda loader, node: None
+        )
         data = yaml.load(content)
         if data:
             # Get language from framework or tool
