@@ -47,7 +47,7 @@ LANGUAGE_MAPPING = {
     'pipenv': 'python',
     'pytest': 'python',
     'golang': 'go',
-    'docker': None  # Will be detected from files
+    'docker': None
 }
 
 FRAMEWORKS_BY_LANGUAGE = {
@@ -209,12 +209,17 @@ def search_in_repo(owner, repo, pattern):
         return False
 
 def process_row(row):
-    """Process a single repository row"""
+    """Process a single repository row with fixes for language and frameworks"""
     try:
-        github_url = f"https://{row['Repository']}"
+        github_url = row['Repository']
+        if not github_url.startswith(("https://", "http://")):
+            github_url = f"https://{github_url}"
+            
+        github_url = github_url.rstrip('/')
+        
         result = {
-            "Repository": row["Repository"],
-            "Language": None,
+            "Repository": github_url,
+            "Language": "unknown",
             "ASV": None,
             "OTEL_YES": False,
             "NR_YES": False,
@@ -225,8 +230,8 @@ def process_row(row):
             "has_micrometer": False,
             "has_prometheus": False,
             "has_aws_lambda_powertools": False,
-            "logging_frameworks": None,
-            "monitoring_frameworks": None
+            "logging_frameworks": "",
+            "monitoring_frameworks": ""
         }
 
         try:
@@ -245,12 +250,12 @@ def process_row(row):
 
             # Extract language and flavor
             language, flavor = extract_language_and_flavor(bogiefile_content)
-            result["Language"] = language
+            result["Language"] = language or "unknown"  # Ensure never empty
             result["flavor"] = flavor
 
             # Detect actual language (handles docker case)
             detected_language = detect_language(owner, repo, language)
-            result["Language"] = detected_language
+            result["Language"] = detected_language or "unknown"  # Final fallback
 
             # Check for monitoring frameworks in Bogiefile
             if "OTEL_" in bogiefile_content:
@@ -263,7 +268,18 @@ def process_row(row):
             # Analyze frameworks if we have a valid language
             if detected_language and detected_language != 'unknown':
                 framework_results = analyze_frameworks(owner, repo, detected_language)
-                result.update(framework_results)
+                
+                # Convert lists to comma-separated strings
+                result["logging_frameworks"] = ",".join(framework_results["logging_frameworks"]) or ""
+                result["monitoring_frameworks"] = ",".join(framework_results["monitoring_frameworks"]) or ""
+                
+                # Update boolean flags
+                result.update({
+                    "has_newrelic": framework_results["has_newrelic"],
+                    "has_micrometer": framework_results["has_micrometer"],
+                    "has_prometheus": framework_results["has_prometheus"],
+                    "has_aws_lambda_powertools": framework_results["has_aws_lambda_powertools"]
+                })
 
                 # Set MANUAL_CASE based on findings
                 if (result["has_newrelic"] or result["has_micrometer"] or 
@@ -291,12 +307,19 @@ def process_row(row):
         print(f"Unexpected error in process_row: {e}")
         return {
             "Repository": row.get("Repository", "Unknown"),
+            "Language": "unknown",
             "ASV": None,
             "OTEL_YES": False,
             "NR_YES": False,
             "NO_APM": True,
-            "Language": None,
-            "flavor": None
+            "flavor": None,
+            "MANUAL_CASE": False,
+            "has_newrelic": False,
+            "has_micrometer": False,
+            "has_prometheus": False,
+            "has_aws_lambda_powertools": False,
+            "logging_frameworks": "",
+            "monitoring_frameworks": ""
         }
 
 def extract_asv(content):
@@ -338,9 +361,15 @@ def extract_language_and_flavor(content):
             if 'pipeline' in data and 'tasks' in data['pipeline']:
                 build_task = data['pipeline']['tasks'].get('build', {})
                 if isinstance(build_task, dict):
-                    tool = build_task.get('tool')
-                    if tool:
-                        language = LANGUAGE_MAPPING.get(tool.lower(), tool)
+                    # First try to get framework
+                    framework = build_task.get('framework')
+                    if framework:
+                        language = LANGUAGE_MAPPING.get(framework.lower(), framework)
+                    else:
+                        # Fall back to tool if framework not specified
+                        tool = build_task.get('tool')
+                        if tool:
+                            language = LANGUAGE_MAPPING.get(tool.lower(), tool)
             
             # Get flavor
             if 'pipeline' in data and 'flavor' in data['pipeline']:
@@ -348,10 +377,17 @@ def extract_language_and_flavor(content):
                 
         # Fallback to regex
         if not language:
-            match = re.search(r"tool:\s*([^\s]+)", content, re.IGNORECASE)
-            if match:
-                tool = match.group(1).strip()
-                language = LANGUAGE_MAPPING.get(tool.lower(), tool)
+            # First try framework regex
+            framework_match = re.search(r"framework:\s*([^\s]+)", content, re.IGNORECASE)
+            if framework_match:
+                framework = framework_match.group(1).strip()
+                language = LANGUAGE_MAPPING.get(framework.lower(), framework)
+            else:
+                # Fall back to tool regex
+                tool_match = re.search(r"tool:\s*([^\s]+)", content, re.IGNORECASE)
+                if tool_match:
+                    tool = tool_match.group(1).strip()
+                    language = LANGUAGE_MAPPING.get(tool.lower(), tool)
                 
         if not flavor:
             match = re.search(r"flavor:\s*([^\s]+)", content, re.IGNORECASE)
