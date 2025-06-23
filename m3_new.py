@@ -46,6 +46,7 @@ LANGUAGE_MAPPING = {
     'mvn': 'java',
     'pipenv': 'python',
     'pytest': 'python',
+    'script': 'python',
     'golang': 'go',
     'docker': None
 }
