@@ -783,19 +783,16 @@ class GitHubRepoAnalyzer:
         return supported_frameworks
 
     def analyze_repository(self, github_url):
-        """Main analysis function that follows the specified steps"""
+        """Main analysis function with additional fields from m2_new.py"""
         try:
             owner, repo = self.extract_repo_info(github_url)
             print(f"\nAnalyzing repository: {owner}/{repo}")
             
-            # Step 1: Identify language
-            language = self.get_repo_language(owner, repo)
-            print(f"Primary language: {language if language else 'Unknown'}")
-            
+            # Initialize result with all fields
             result = {
                 "repository": f"{owner}/{repo}",
-                "language": language,
-                "is_golang": language and language.lower() == "go",
+                "language": None,
+                "is_golang": False,
                 "custom_metrics": None,
                 "auto_instrumentation": None,
                 "recommendation": None,
@@ -806,47 +803,67 @@ class GitHubRepoAnalyzer:
                 "has_aws_lambda_powertools": False,
                 "logging_frameworks": None,
                 "monitoring_frameworks": None,
+                "MANUAL_CASE": False,
+                "OTEL_YES": False,
+                "flavor": None,
                 "details": {}
             }
-            
-            # Step 1.5: Search for monitoring/logging frameworks if we know the language
+
+            # Step 1: Identify language
+            language = self.get_repo_language(owner, repo)
+            result['language'] = language
+            result['is_golang'] = language and language.lower() == "go"
+            print(f"Primary language: {language if language else 'Unknown'}")
+
+            # Step 1.5: Search for monitoring/logging frameworks
             if language:
                 framework_results = self.search_code_for_patterns(owner, repo, language)
                 result.update(framework_results)
-            
+                
+                # Set MANUAL_CASE for Go repositories (from m2_new.py)
+                if result['is_golang']:
+                    result['MANUAL_CASE'] = True
+
             # Step 2: Check for custom metrics/spans
             if language:
                 custom_metrics_result = self.check_custom_metrics(owner, repo, language)
                 result["custom_metrics"] = custom_metrics_result["has_custom_metrics"]
                 result["details"]["custom_metrics"] = custom_metrics_result
-                print(f"Custom metrics/spans detected: {'Yes' if result['custom_metrics'] else 'No'}")
+                
+                # Set MANUAL_CASE if custom metrics found (from m2_new.py)
                 if result["custom_metrics"]:
-                    print(f"  Reason: {custom_metrics_result['reason']}")
-                    if custom_metrics_result.get("patterns_found"):
-                        print("  Patterns found:")
-                        for pattern in custom_metrics_result["patterns_found"]:
-                            print(f"    - {pattern}")
+                    result['MANUAL_CASE'] = True
             else:
                 result["custom_metrics"] = False
-                print("Skipping custom metrics check - language not detected")
-            
+
             # Step 3: Check for auto-instrumentation compatibility
             if language:
                 auto_instrumentation_result = self.check_auto_instrumentation(owner, repo, language)
                 result["auto_instrumentation"] = auto_instrumentation_result["compatible"]
                 result["details"]["auto_instrumentation"] = auto_instrumentation_result
-                print(f"Auto-instrumentation compatible: {'Yes' if result['auto_instrumentation'] else 'No'}")
-                print(f"  Reason: {auto_instrumentation_result['reason']}")
                 
-                if "frameworks" in auto_instrumentation_result:
-                    print("Detected frameworks:")
-                    for fw in auto_instrumentation_result["frameworks"]:
-                        print(f"  - {fw.get('framework', fw.get('server', 'Unknown'))}")
+                # Set OTEL_YES flag (from m2_new.py)
+                result['OTEL_YES'] = result["auto_instrumentation"]
             else:
                 result["auto_instrumentation"] = False
-                print("Skipping auto-instrumentation check - language not detected")
-            
-            # Step 4: Determine recommendation
+
+            # Step 4: Extract flavor from Bogiefile (from m2_new.py)
+            bogiefile_content = self.download_file(owner, repo, "Bogiefile")
+            if bogiefile_content:
+                try:
+                    # Look for flavor in YAML structure
+                    if "flavor:" in bogiefile_content:
+                        flavor_match = re.search(r"flavor:\s*([\w/-]+)", bogiefile_content)
+                        if flavor_match:
+                            result['flavor'] = flavor_match.group(1).strip()
+                    
+                    # Also check for OTEL_ indicators
+                    if "OTEL_" in bogiefile_content:
+                        result['OTEL_YES'] = True
+                except Exception as e:
+                    print(f"Error parsing Bogiefile: {e}")
+
+            # Step 5: Determine recommendation
             if result["is_golang"]:
                 result["recommendation"] = "Use Windsurf for Golang instrumentation"
                 result["reason"] = "Golang typically requires manual instrumentation"
@@ -856,35 +873,23 @@ class GitHubRepoAnalyzer:
             elif result["auto_instrumentation"]:
                 result["recommendation"] = "Use OpenTelemetry auto-instrumentation"
                 result["reason"] = "Compatible with auto-instrumentation"
-                if language.lower() == "python":
+                if language and language.lower() == "python":
                     result["reason"] += f" (Detected: {', '.join(fw['framework'] for fw in auto_instrumentation_result.get('frameworks', []))})"
             else:
                 result["recommendation"] = "Use Windsurf"
                 result["reason"] = "Not compatible with auto-instrumentation and no custom metrics detected"
             
             return result
-            
-        except ValueError as e:
-            print(f"Error: {e}")
+        except Exception as e:
+            print(f"Error in analyze_repository: {e}")
             return {
                 "repository": github_url,
                 "error": str(e)
             }
-        except requests.exceptions.RequestException as e:
-            print(f"Network error: {e}")
-            return {
-                "repository": github_url,
-                "error": f"Network error: {str(e)}"
-            }
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            return {
-                "repository": github_url,
-                "error": f"Unexpected error: {str(e)}"
-            }
 
+# Update the process_csv function to include new fields
 def process_csv(input_file, output_file=None):
-    """Process a CSV file containing GitHub URLs"""
+    """Process CSV with additional fields from m2_new.py"""
     if output_file is None:
         base, ext = os.path.splitext(input_file)
         output_file = f"{base}_analyzed{ext}"
@@ -907,7 +912,10 @@ def process_csv(input_file, output_file=None):
             'Has_Prometheus',
             'Has_AWS_Lambda_Powertools',
             'Logging_Frameworks',
-            'Monitoring_Frameworks'
+            'Monitoring_Frameworks',
+            'Manual_Case',
+            'OTEL_Enabled',
+            'Flavor'
         ]
         
         writer = csv.DictWriter(outfile, fieldnames=fieldnames)
@@ -936,15 +944,19 @@ def process_csv(input_file, output_file=None):
                 'Has_Prometheus': 'Yes' if result.get('has_prometheus') else 'No',
                 'Has_AWS_Lambda_Powertools': 'Yes' if result.get('has_aws_lambda_powertools') else 'No',
                 'Logging_Frameworks': ', '.join(result.get('logging_frameworks', [])) if result.get('logging_frameworks') else '',
-                'Monitoring_Frameworks': ', '.join(result.get('monitoring_frameworks', [])) if result.get('monitoring_frameworks') else ''
+                'Monitoring_Frameworks': ', '.join(result.get('monitoring_frameworks', [])) if result.get('monitoring_frameworks') else '',
+                'Manual_Case': 'Yes' if result.get('MANUAL_CASE') else 'No',
+                'OTEL_Enabled': 'Yes' if result.get('OTEL_YES') else 'No',
+                'Flavor': result.get('flavor', '')
             })
             
             writer.writerow(row)
     
     print(f"\nAnalysis complete. Results saved to: {output_file}")
 
+# Update the main() function to show new fields in single URL mode
 def main():
-    """CLI entry point"""
+    """CLI entry point with new field display"""
     if len(sys.argv) < 2:
         print("Usage:")
         print("  python repo_analyzer.py <github_repo_url>")
@@ -972,6 +984,9 @@ def main():
             print(f"Error: {result['error']}")
         else:
             print(f"Language: {result['language']}")
+            print(f"Flavor: {result.get('flavor', 'Not specified')}")  # Added
+            print(f"Manual Case: {'Yes' if result['MANUAL_CASE'] else 'No'}")  # Added
+            print(f"OTEL Enabled: {'Yes' if result['OTEL_YES'] else 'No'}")  # Added
             print(f"New Relic detected: {'Yes' if result['has_newrelic'] else 'No'}")
             print(f"Micrometer detected: {'Yes' if result['has_micrometer'] else 'No'}")
             print(f"Prometheus detected: {'Yes' if result['has_prometheus'] else 'No'}")
